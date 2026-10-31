@@ -1,175 +1,162 @@
+import re
 import streamlit as st
-import json
-import os
-import streamlit.components.v1 as components
+import markdown
+from bs4 import BeautifulSoup
+from weasyprint import HTML
 
-# 페이지 설정 (와이드 모드)
-st.set_page_config(page_title="수능 수학 시험지 자동 생성기", layout="wide")
+st.set_page_config(page_title="수능 모의고사 시험지 자동 생성기", layout="wide")
 
-st.title("🎓 수능 수학 시험지 자동 생성기")
-st.markdown("원하는 문제 수를 선택하고, 우측 상단의 **[PDF로 저장 / 인쇄하기]** 버튼을 눌러 B4 PDF로 바로 저장하세요.")
+def parse_math_markdown(md_text):
+    """
+    마크다운을 문항 단위로 파싱하여 HTML 구조로 전환
+    """
+    # [문제지] 섹션 추출 (정답 및 해설 부분 제외)
+    if "## Ⅱ. [정답 및 상세 해설]" in md_text:
+        problem_part = md_text.split("## Ⅱ. [정답 및 상세 해설]")[0]
+    else:
+        problem_part = md_text
 
-# 1. JSON 데이터 로드
-DATA_FILE = "questions.json"
-
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        all_questions = json.load(f)
-else:
-    st.error(f"'{DATA_FILE}' 파일을 찾을 수 없습니다. GitHub 저장소를 확인해주세요.")
-    all_questions = []
-
-# 2. 사이드바 설정 (출제 문항 수 조절)
-st.sidebar.header("⚙️ 시험지 설정")
-max_q = len(all_questions)
-if max_q > 0:
-    selected_count = st.sidebar.slider("출제할 문제 수", min_value=1, max_value=max_q, value=min(4, max_q))
-else:
-    selected_count = 0
-
-exam_title = st.sidebar.text_input("시험지 제목", "2022학년도 대학수학능력시험 문제지")
-subject_name = st.sidebar.text_input("과목명", "수학 영역")
-exam_type = st.sidebar.selectbox("형태", ["홀수형", "짝수형"])
-
-# 선택된 문제만큼 자르기
-target_questions = all_questions[:selected_count]
-
-# 3. HTML 템플릿 생성 함수 (인쇄 버튼 포함)
-def generate_exam_html(questions, title, subject, type_str):
-    pages = [questions[i:i + 4] for i in range(0, len(questions), 4)]
-    total_pages = len(pages) if pages else 1
+    # 문항 단위 분할 (### n. [예상 변형 문제 n] 형태 기준)
+    raw_questions = re.split(r'(?=^### \d+\.)', problem_part, flags=re.M)
     
-    pages_html = ""
+    parsed_items = []
+    for q_text in raw_questions:
+        q_text = q_text.strip()
+        if not q_text or q_text.startswith("# "):
+            continue
+
+        # 수식 태그 보존 및 LaTeX 인라인/디스플레이 식 정규화
+        # MathJax rendering ready format
+        html_item = markdown.markdown(q_text, extensions=['fenced_code', 'tables'])
+        parsed_items.append(f'<div class="question-card">{html_item}</div>')
+
+    return "".join(parsed_items)
+
+def generate_b4_pdf(questions_html):
+    """
+    B4 2단 수능 모의고사 고정 레이아웃 HTML/CSS 생성 및 PDF 변환
+    """
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+      @page {{
+        size: 257mm 364mm; /* B4 정규 규격 */
+        margin: 15mm 12mm 15mm 12mm;
+      }}
+      body {{
+        font-family: "Malgun Gothic", "UnBatang", "Batang", serif;
+        font-size: 10.5pt;
+        line-height: 1.6;
+        color: #000;
+        margin: 0;
+        padding: 0;
+      }}
+      
+      /* 헤더 영역 (시험지 상단 타이틀) */
+      .exam-header {{
+        text-align: center;
+        border-bottom: 2px solid #000;
+        padding-bottom: 5px;
+        margin-bottom: 12px;
+      }}
+      .exam-header h1 {{
+        font-size: 18pt;
+        margin: 0;
+        letter-spacing: 2px;
+      }}
+
+      /* B4 2단 핵심 레이아웃 */
+      .exam-grid {{
+        column-count: 2;
+        column-gap: 12mm;
+        column-rule: 1px solid #777;
+        height: 100%;
+      }}
+
+      /* 문항 단락 쪼개짐 방지 박스 */
+      .question-card {{
+        break-inside: avoid;
+        page-break-inside: avoid;
+        margin-bottom: 18px;
+        padding-bottom: 10px;
+        border-bottom: 0.5px dashed #ccc;
+      }}
+
+      .question-card h3 {{
+        font-size: 11pt;
+        margin: 0 0 6px 0;
+        background-color: #f8f9fa;
+        padding: 2px 4px;
+        border-left: 3px solid #000;
+      }}
+
+      p {{
+        margin: 4px 0;
+        text-align: justify;
+      }}
+      
+      /* 보기①~⑤ 선지 세로/가로 정렬 보장 */
+      ol, ul {{
+        margin: 6px 0;
+        padding-left: 18px;
+      }}
+    </style>
+    <!-- LaTeX 수식 시각화를 위한 MathJax 렌더링 -->
+    <script>
+    MathJax = {{
+      tex: {{
+        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }}
+    }};
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    </head>
+    <body>
+      <div class="exam-header">
+        <h1>2026학년도 수능 대비 수학 영역 모의고사</h1>
+      </div>
+      <div class="exam-grid">
+        {questions_html}
+      </div>
+    </body>
+    </html>
+    """
     
-    for page_idx, page_q in enumerate(pages):
-        page_num = page_idx + 1
-        q_boxes = ""
-        for q in page_q:
-            q_boxes += f'''
-            <div class="q-box">
-              <div>
-                <span class="q-title">{q["number"]}.</span> {q["body"]} <span class="q-score">[{q["score"]}점]</span>
-              </div>
-              <div class="q-choices">
-                <span>① {q["choices"][0]}</span>
-                <span>② {q["choices"][1]}</span>
-                <span>③ {q["choices"][2]}</span>
-                <span>④ {q["choices"][3]}</span>
-                <span>⑤ {q["choices"][4]}</span>
-              </div>
-            </div>
-            '''
+    # WeasyPrint 엔진으로 무결한 PDF 바이너리 바이패스 렌더링
+    pdf_bytes = HTML(string=html_content).write_pdf()
+    return pdf_bytes
+
+# Streamlit UI
+st.title("📐 수능 모의고사 B4 2단 시험지 자동 생성기")
+st.caption("제미나이 노트북 마크다운(.md)을 입력하면 텍스트 밀림 없는 B4 수능 규격 PDF로 즉시 변환합니다.")
+
+uploaded_file = st.file_uploader("제미나이 노트북 문제 마크다운(.md) 파일 업로드", type=["md", "txt"])
+
+if uploaded_file is not None:
+    raw_md = uploaded_file.read().decode("utf-8")
+    
+    st.success("파일 파싱 완료!")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("📄 원본 마크다운 미리보기")
+        st.text_area("Markdown Contents", raw_md, height=400)
         
-        pages_html += f'''
-        <div class="paper">
-          <div class="header">
-            <div class="header-top">
-              <div class="header-title">{title}</div>
-              <div class="header-page-num">{page_num}</div>
-            </div>
-            <div class="header-mid">
-              <div class="badge-period">제 2 교시</div>
-              <div class="header-subject">{subject}</div>
-              <div class="badge-type">{type_str}</div>
-            </div>
-          </div>
-
-          <div class="badge-choice-wrap">
-            <div class="badge-choice">5지선다형</div>
-          </div>
-
-          <div class="grid-container">
-            {q_boxes}
-          </div>
-
-          <div class="footer">
-            <div class="page-box">{page_num} / {total_pages}</div>
-            <div>이 문제지에 관한 저작권은 한국교육과정평가원에 있습니다.</div>
-          </div>
-        </div>
-        '''
-
-    full_html = f'''<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-<style>
-  @page {{
-    size: 257mm 364mm;
-    margin: 12mm 15mm 10mm 15mm;
-  }}
-  body {{
-    font-family: "Batang", "KoPubBatang", "바탕", serif;
-    margin: 0; padding: 0; background-color: #333; color: #000;
-  }}
-  /* 상단 고정 인쇄 버튼 스타일 */
-  .no-print {{
-    position: fixed; top: 15px; right: 25px; z-index: 9999;
-    background: #007bff; color: white; border: none; padding: 12px 20px;
-    font-size: 14pt; font-weight: bold; border-radius: 8px; cursor: pointer;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-  }}
-  .no-print:hover {{ background: #0056b3; }}
-
-  .paper {{
-    width: 227mm; height: 338mm; margin: 15mm auto; background: #fff;
-    box-sizing: border-box; display: flex; flex-direction: column;
-    justify-content: space-between; position: relative; padding: 12mm 15mm 10mm 15mm;
-    box-shadow: 0 0 15px rgba(0,0,0,0.5); page-break-after: always;
-  }}
-  .header {{
-    border-bottom: 2px solid #000; padding-bottom: 2mm; margin-bottom: 3mm; position: relative;
-  }}
-  .header-top {{ position: relative; text-align: center; height: 10mm; }}
-  .header-title {{ font-size: 20pt; font-weight: 900; letter-spacing: -1px; font-family: "Batang", "바탕", serif; display: inline-block; }}
-  .header-page-num {{ position: absolute; right: 2mm; top: -2mm; font-size: 28pt; font-weight: bold; font-family: "Batang", "바탕", serif; line-height: 1; }}
-  .header-mid {{ display: flex; justify-content: space-between; align-items: center; margin-top: 1mm; position: relative; }}
-  .badge-period {{ border: 2px solid #000; border-radius: 14px; padding: 1px 12px; font-size: 13pt; font-weight: bold; font-family: "Batang", "바탕", serif; }}
-  .header-subject {{ position: absolute; left: 50%; transform: translateX(-50%); font-size: 32pt; font-weight: 900; letter-spacing: 6px; font-family: "Batang", "바탕", serif; }}
-  .badge-type {{ border: 2.5px solid #000; border-radius: 4px; padding: 2px 8px; font-size: 15pt; font-weight: 900; font-family: "Batang", "바탕", serif; }}
-  .badge-choice-wrap {{ margin-top: 2mm; margin-bottom: 2mm; }}
-  .badge-choice {{ display: inline-block; border: 1.5px solid #000; padding: 2px 10px; font-size: 10.5pt; font-weight: bold; font-family: "Dotum", "돋움", sans-serif; letter-spacing: 2px; }}
-  .grid-container {{ display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8mm 10mm; height: 280mm; position: relative; }}
-  .grid-container::before {{ content: ""; position: absolute; left: 50%; top: -4mm; bottom: -6mm; width: 1.5px; background-color: #000; transform: translateX(-50%); }}
-  .q-box {{ padding: 2mm 4mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start; font-size: 10.5pt; line-height: 1.7; word-break: keep-all; }}
-  .q-title {{ font-weight: bold; font-size: 11pt; font-family: "Dotum", "돋움", sans-serif; }}
-  .q-score {{ font-weight: normal; font-size: 9.5pt; }}
-  .q-choices {{ display: flex; justify-content: space-between; margin-top: 5mm; padding-left: 1mm; padding-right: 1mm; }}
-  .footer {{ position: relative; padding-top: 3mm; display: flex; justify-content: flex-end; align-items: center; font-size: 8pt; font-family: "Dotum", "돋움", sans-serif; color: #444; }}
-  .page-box {{ position: absolute; left: 50%; top: -4mm; transform: translateX(-50%); background-color: #fff; border: 1px solid #000; padding: 1px 6px; font-size: 9pt; font-weight: bold; font-family: "Dotum", "돋움", sans-serif; color: #000; }}
-
-  /* 인쇄 시 버튼 숨기기 및 배경 깔끔하게 처리 */
-  @media print {{
-    .no-print {{ display: none; }}
-    body {{ background: none; }}
-    .paper {{ box-shadow: none; margin: 0; }}
-  }}
-</style>
-</head>
-<body>
-
-<button class="no-print" onclick="window.print()">🖨️ PDF로 저장 / 인쇄하기</button>
-
-{pages_html}
-
-<script>
-  if (window.MathJax) {{
-      MathJax.typeset();
-  }}
-</script>
-</body>
-</html>
-'''
-    return full_html
-
-# 4. 화면 출력
-if target_questions:
-    st.subheader(f"📄 미리보기 (총 {len(target_questions)}문제 선택됨)")
-    exam_html_code = generate_exam_html(target_questions, exam_title, subject_name, exam_type)
-    
-    # Streamlit 내에 HTML 렌더링 (높이 넉넉하게 설정)
-    components.html(exam_html_code, height=1200, scrolling=True)
-else:
-    st.warning("선택된 문제가 없습니다.")
+    with col2:
+        st.subheader("⚡ B4 2단 렌더링 실행")
+        if st.button("수능 모의고사 PDF 생성하기", type="primary"):
+            with st.spinner("B4 2단 레이아웃 및 수식 렌더링 중..."):
+                parsed_html = parse_math_markdown(raw_md)
+                pdf_data = generate_b4_pdf(parsed_html)
+                
+                st.download_button(
+                    label="⬇️ 수능 모의고사 PDF 다운로드",
+                    data=pdf_data,
+                    file_name="2026_수능모의고사_수학영역.pdf",
+                    mime="application/pdf"
+                )
